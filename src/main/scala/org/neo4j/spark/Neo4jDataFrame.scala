@@ -61,6 +61,25 @@ object Neo4jDataFrame {
     })
   }
 
+  def mergeNodes(sc: SparkContext, dataFrame: DataFrame, nodes: (String,Seq[String]), renamedColumns: Map[String,String] = Map.empty): Unit = {
+
+    val nodeLabel: String = renamedColumns.getOrElse(nodes._2.head, nodes._2.head)
+    val createStatement = s"""
+        UNWIND {rows} as row
+        MERGE (node:`${nodes._1}` {`${nodeLabel}` : row.source.`${nodeLabel}`})
+        ON CREATE SET node += row.node_properties
+        """
+    val partitions = Math.max(1,(dataFrame.count() / 10000).asInstanceOf[Int])
+    val config = Neo4jConfig( sc.getConf )
+    dataFrame.repartition(partitions).foreachPartition( rows => {
+      val params: AnyRef = rows.map(r =>
+        Map(
+          "node_properties" -> nodes._2.map( c => (renamedColumns.getOrElse(c,c), r.getAs[AnyRef](c))).toMap.asJava)
+          .asJava).asJava
+      Neo4jDataFrame.execute(config, createStatement, Map("rows" -> params).asJava, write = true)
+    })
+  }
+
   def execute(config : Neo4jConfig, query: String, parameters: java.util.Map[String, AnyRef], write: Boolean = false) : ResultSummary = {
     val driver: Driver = config.driver()
     val session = driver.session()
